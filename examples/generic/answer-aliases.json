@@ -1,0 +1,35 @@
+{
+  "name": "Answer Aliases",
+  "version": "v1",
+  "description": "Closed-answer examples with accepted aliases and known wrong answers.",
+  "systemPrompt": "Answer directly with the shortest correct phrase.",
+  "cases": [
+    {
+      "id": "project-codename",
+      "input": "The project codename is Northstar. What is the codename?",
+      "expected": {
+        "answers": ["Northstar", "north star"],
+        "negativeAnswers": ["Polaris", "Northern Lights"]
+      },
+      "tags": ["single-turn", "closed-answer", "aliases"]
+    },
+    {
+      "id": "support-channel",
+      "input": "For urgent incidents, the support channel is #ops-critical. Which channel should be used?",
+      "expected": {
+        "answers": ["#ops-critical", "ops-critical"],
+        "negativeAnswers": ["#general", "email"]
+      },
+      "tags": ["single-turn", "closed-answer", "aliases"]
+    },
+    {
+      "id": "release-train",
+      "input": "The stable release train is called Cedar. What release train is stable?",
+      "expected": {
+        "answers": ["Cedar"],
+        "negativeAnswers": ["Birch", "Maple"]
+      },
+      "tags": ["single-turn", "closed-answer", "aliases"]
+    }
+  ]
+}

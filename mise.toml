@@ -1,0 +1,26 @@
+[tools]
+go = "1.26.3"
+
+[tasks."go:fmt"]
+description = "Format Go source"
+run = "gofmt -w ."
+
+[tasks."go:fmt:check"]
+description = "Check Go formatting"
+run = "test -z \"$(gofmt -l .)\""
+
+[tasks."go:test"]
+description = "Run Go tests"
+run = "go test ./..."
+
+[tasks."go:vet"]
+description = "Run go vet"
+run = "go vet ./..."
+
+[tasks."examples:smoke"]
+description = "Smoke-test bundled example suites through the CLI consumer"
+run = "go run ./cmd/sigma-evals smoke-examples --examples examples --out runs/examples-smoke.json"
+
+[tasks.ci]
+description = "Run local verification"
+depends = ["go:fmt:check", "go:test", "go:vet", "examples:smoke"]

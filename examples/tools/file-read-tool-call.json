@@ -1,0 +1,35 @@
+{
+  "name": "Required File Read Tool Call",
+  "version": "v1",
+  "description": "Tool-call eval that checks whether the assistant requests the expected file-reading tool before answering.",
+  "systemPrompt": "Use tools when needed. Do not guess file contents.",
+  "cases": [
+    {
+      "id": "read-config",
+      "input": "Read config/app.toml and summarize the service name.",
+      "tools": [
+        {
+          "name": "read_file",
+          "description": "Read a UTF-8 text file from the workspace.",
+          "inputSchema": {
+            "type": "object",
+            "properties": {
+              "path": {"type": "string"}
+            },
+            "required": ["path"],
+            "additionalProperties": false
+          }
+        }
+      ],
+      "expected": {
+        "toolCalls": [
+          {
+            "name": "read_file",
+            "arguments": {"path": "config/app.toml"}
+          }
+        ]
+      },
+      "tags": ["single-turn", "tool-call", "file"]
+    }
+  ]
+}

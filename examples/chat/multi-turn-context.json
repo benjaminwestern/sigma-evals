@@ -1,0 +1,28 @@
+{
+  "name": "Multi-turn Context Recall",
+  "version": "v1",
+  "description": "Multi-turn chat eval that checks whether the model carries context across prior turns.",
+  "cases": [
+    {
+      "id": "deployment-target",
+      "messages": [
+        {
+          "role": "user",
+          "content": [{"type": "text", "text": "For this project, my deployment target is Cloud Run."}]
+        },
+        {
+          "role": "assistant",
+          "content": [{"type": "text", "text": "Got it."}]
+        },
+        {
+          "role": "user",
+          "content": [{"type": "text", "text": "What deployment target did I choose? Answer with just the product name."}]
+        }
+      ],
+      "expected": {
+        "answers": ["Cloud Run"]
+      },
+      "tags": ["multi-turn", "chat", "context"]
+    }
+  ]
+}

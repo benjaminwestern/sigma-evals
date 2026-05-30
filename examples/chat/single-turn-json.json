@@ -1,0 +1,19 @@
+{
+  "name": "Single-turn JSON Extraction",
+  "version": "v1",
+  "description": "Single-turn chat eval requiring structured JSON output.",
+  "systemPrompt": "Extract the requested fields and return only JSON.",
+  "cases": [
+    {
+      "id": "extract-person",
+      "input": "Ada Lovelace wrote notes on the Analytical Engine.",
+      "expected": {
+        "json": {
+          "person": "Ada Lovelace",
+          "topic": "Analytical Engine"
+        }
+      },
+      "tags": ["single-turn", "chat", "json"]
+    }
+  ]
+}

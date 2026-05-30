@@ -1,0 +1,17 @@
+{
+  "name": "Needle Retrieval",
+  "version": "v1",
+  "description": "A small needle-in-a-haystack example that checks whether a model retrieves a specific fact from distracting context.",
+  "systemPrompt": "Find the requested fact. Answer with only the value.",
+  "cases": [
+    {
+      "id": "needle-ticket",
+      "input": "Context block 1: The dashboard colour is blue. Context block 2: The region is eu-west-1. Context block 3: Ignore earlier project names. Context block 4: The deployment ticket is TICKET-7429. Context block 5: The team lunch is Thursday. Question: What is the deployment ticket?",
+      "expected": {
+        "answers": ["TICKET-7429", "7429"],
+        "negativeAnswers": ["eu-west-1", "Thursday"]
+      },
+      "tags": ["single-turn", "needle", "reasoning"]
+    }
+  ]
+}

@@ -1,0 +1,22 @@
+{
+  "name": "Multiple-choice Science Smoke",
+  "version": "v1",
+  "description": "Multiple-choice eval that can be scored from a selected label or answer text.",
+  "systemPrompt": "Answer with the letter of the correct option only.",
+  "cases": [
+    {
+      "id": "water-freezes",
+      "input": "At standard pressure, what happens to water at 0 degrees Celsius?\nA. It freezes\nB. It boils\nC. It becomes plasma\nD. It burns",
+      "expected": {
+        "choices": [
+          {"label": "A", "text": "It freezes"},
+          {"label": "B", "text": "It boils"},
+          {"label": "C", "text": "It becomes plasma"},
+          {"label": "D", "text": "It burns"}
+        ],
+        "correctChoices": ["A"]
+      },
+      "tags": ["single-turn", "multiple-choice"]
+    }
+  ]
+}
