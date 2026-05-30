@@ -188,10 +188,12 @@ func (d RubricDimension) JSONKey() string {
 
 // RubricJudgeScorer asks an LLM judge for a multi-dimensional rubric result.
 type RubricJudgeScorer struct {
-	Client       Completer
-	JudgeModel   sigma.Model
-	Rubric       Rubric
-	JudgeOptions []sigma.Option
+	Client          Completer
+	TargetCompleter TargetCompleter
+	Judge           Target
+	JudgeModel      sigma.Model
+	Rubric          Rubric
+	JudgeOptions    []sigma.Option
 }
 
 // Name implements Scorer.
@@ -200,20 +202,23 @@ func (s RubricJudgeScorer) Name() string { return "rubric_judge" }
 // Score implements Scorer.
 func (s RubricJudgeScorer) Score(ctx context.Context, input ScoreInput) (Score, error) {
 	rubric := s.Rubric.WithCase(input.Case)
-	final, err := clientOrDefault(s.Client).Complete(ctx, s.JudgeModel, sigma.Request{
+	judgeTarget := targetWithModelFallback(s.Judge, s.JudgeModel)
+	judgeModel := judgeTarget.modelForScoring()
+	evaluator := &Evaluator{Client: s.Client, TargetCompleter: s.TargetCompleter}
+	judgeResult, err := evaluator.completeTarget(ctx, judgeTarget, sigma.Request{
 		Messages: []sigma.Message{sigma.UserText(rubric.Prompt(input))},
-	}, appendOptions(s.JudgeOptions, withStructuredOutput(s.JudgeModel, map[string]any{
+	}, appendOptions(s.JudgeOptions, withStructuredOutput(judgeModel, map[string]any{
 		"type": "json_schema",
 		"json_schema": map[string]any{
 			"name":   "rubric_scores",
 			"strict": true,
 			"schema": rubric.JSONSchema(false),
 		},
-	}))...)
+	})), map[string]any{"role": "judge", "mode": "rubric"})
 	if err != nil {
 		return Score{}, err
 	}
-	rawOutput, err := AssistantText(final)
+	rawOutput, err := targetResultText(judgeResult)
 	if err != nil {
 		return Score{}, err
 	}

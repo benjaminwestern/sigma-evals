@@ -36,6 +36,7 @@ type PairwiseJudgeInput struct {
 	AnswerB      string         `json:"answerB"`
 	Reference    string         `json:"reference,omitempty"`
 	Rubric       string         `json:"rubric,omitempty"`
+	Judge        Target         `json:"judge,omitempty"`
 	JudgeModel   sigma.Model    `json:"judgeModel"`
 	JudgeOptions []sigma.Option `json:"-"`
 }
@@ -76,14 +77,16 @@ func (e *Evaluator) PairwiseJudge(ctx context.Context, input PairwiseJudgeInput)
 }
 
 func (e *Evaluator) pairwiseJudgeOnce(ctx context.Context, input PairwiseJudgeInput, answerA string, answerB string) (PairwiseSingleResult, error) {
-	final, err := e.clientOrDefault().Complete(ctx, input.JudgeModel, sigma.Request{
+	judgeTarget := targetWithModelFallback(input.Judge, input.JudgeModel)
+	judgeModel := judgeTarget.modelForScoring()
+	judgeResult, err := e.completeTarget(ctx, judgeTarget, sigma.Request{
 		Messages: []sigma.Message{sigma.UserText(formatPairwisePrompt(input, answerA, answerB))},
-	}, appendOptions(input.JudgeOptions, withStructuredOutput(input.JudgeModel, pairwiseResponseFormat()))...)
-	result := PairwiseSingleResult{JudgeMessage: final}
+	}, appendOptions(input.JudgeOptions, withStructuredOutput(judgeModel, pairwiseResponseFormat())), map[string]any{"role": "judge", "mode": "pairwise"})
+	result := PairwiseSingleResult{JudgeMessage: judgeResult.Message}
 	if err != nil {
 		return result, err
 	}
-	rawOutput, err := AssistantText(final)
+	rawOutput, err := targetResultText(judgeResult)
 	result.RawJudgeOutput = rawOutput
 	if err != nil {
 		return result, err

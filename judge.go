@@ -24,8 +24,9 @@ const (
 )
 
 const (
-	defaultRepairTurns = 1
-	defaultTopLogprobs = 5
+	defaultRepairTurns        = 1
+	defaultTopLogprobs        = 5
+	defaultGEvalPassThreshold = 3
 )
 
 var (
@@ -38,14 +39,27 @@ var (
 // Mode identifies an LLM judge strategy.
 type Mode string
 
-// Evaluator runs target and judge model calls through Sigma.
+// Evaluator runs target and judge model calls through a TargetCompleter.
+//
+// Client is kept for compatibility with the original Sigma-client-shaped API.
+// New code that needs agent runtimes, saved traces, or app-owned execution
+// should use NewTargetEvaluator or set TargetCompleter directly.
 type Evaluator struct {
-	Client Completer
+	Client          Completer
+	TargetCompleter TargetCompleter
 }
 
-// NewEvaluator constructs an Evaluator. A nil client uses sigma.NewClient at call time.
+// NewEvaluator constructs an Evaluator backed by a Sigma-style Completer. A nil
+// client uses sigma.NewClient at call time.
 func NewEvaluator(client Completer) *Evaluator {
 	return &Evaluator{Client: client}
+}
+
+// NewTargetEvaluator constructs an Evaluator backed by a TargetCompleter. This
+// is the preferred SDK seam for agent runtimes, hosted apps, saved outputs, and
+// other non-Sigma execution surfaces.
+func NewTargetEvaluator(completer TargetCompleter) *Evaluator {
+	return &Evaluator{TargetCompleter: completer}
 }
 
 // EvaluateInput configures target generation plus judge evaluation.
@@ -54,22 +68,27 @@ type EvaluateInput struct {
 	GroundTruth   string         `json:"groundTruth,omitempty"`
 	Rubric        string         `json:"rubric,omitempty"`
 	TargetPrompt  string         `json:"targetPrompt,omitempty"`
+	Target        Target         `json:"target,omitempty"`
+	Judge         Target         `json:"judge,omitempty"`
 	TargetModel   sigma.Model    `json:"targetModel"`
 	JudgeModel    sigma.Model    `json:"judgeModel"`
 	Mode          Mode           `json:"mode,omitempty"`
+	PassThreshold float64        `json:"passThreshold,omitempty"`
 	TargetOptions []sigma.Option `json:"-"`
 	JudgeOptions  []sigma.Option `json:"-"`
 }
 
 // JudgeInput configures evaluation for an already-generated target output.
 type JudgeInput struct {
-	Input        string         `json:"input,omitempty"`
-	TargetOutput string         `json:"targetOutput"`
-	GroundTruth  string         `json:"groundTruth,omitempty"`
-	Rubric       string         `json:"rubric,omitempty"`
-	JudgeModel   sigma.Model    `json:"judgeModel"`
-	Mode         Mode           `json:"mode,omitempty"`
-	JudgeOptions []sigma.Option `json:"-"`
+	Input         string         `json:"input,omitempty"`
+	TargetOutput  string         `json:"targetOutput"`
+	GroundTruth   string         `json:"groundTruth,omitempty"`
+	Rubric        string         `json:"rubric,omitempty"`
+	Judge         Target         `json:"judge,omitempty"`
+	JudgeModel    sigma.Model    `json:"judgeModel"`
+	Mode          Mode           `json:"mode,omitempty"`
+	PassThreshold float64        `json:"passThreshold,omitempty"`
+	JudgeOptions  []sigma.Option `json:"-"`
 }
 
 // JudgeResult is the normalized score returned by an LLM judge.
@@ -81,6 +100,7 @@ type JudgeResult struct {
 	Score          float64                `json:"score"`
 	Rationale      string                 `json:"rationale,omitempty"`
 	Passed         bool                   `json:"passed"`
+	PassThreshold  float64                `json:"passThreshold,omitempty"`
 	JSON           string                 `json:"json,omitempty"`
 	RawJudgeOutput string                 `json:"rawJudgeOutput,omitempty"`
 	Logprobs       []TokenLogprob         `json:"logprobs,omitempty"`
@@ -96,35 +116,37 @@ type JSONJudgeResult struct {
 	JSON      string  `json:"-"`
 }
 
-// Evaluate generates target output, then evaluates it with the judge model.
+// Evaluate generates target output, then evaluates it with the judge target.
 func (e *Evaluator) Evaluate(ctx context.Context, input EvaluateInput) (JudgeResult, error) {
 	mode := normalizeMode(input.Mode)
 	result := JudgeResult{Mode: mode, Input: input.Input, GroundTruth: input.GroundTruth}
 
-	final, err := e.clientOrDefault().Complete(ctx, input.TargetModel, sigma.Request{
+	targetResult, err := e.completeTarget(ctx, targetWithModelFallback(input.Target, input.TargetModel), sigma.Request{
 		Messages: []sigma.Message{sigma.UserText(formatTargetPrompt(input.TargetPrompt, input.Input))},
-	}, input.TargetOptions...)
-	result.TargetMessage = final
+	}, input.TargetOptions, map[string]any{"role": "target"})
+	result.TargetMessage = targetResult.Message
 	if err != nil {
 		return result, err
 	}
 
-	targetOutput, err := AssistantText(final)
+	targetOutput, err := targetResultText(targetResult)
 	if err != nil {
 		return result, err
 	}
 	result.TargetOutput = targetOutput
 
 	judgeResult, err := e.Judge(ctx, JudgeInput{
-		Input:        input.Input,
-		TargetOutput: targetOutput,
-		GroundTruth:  input.GroundTruth,
-		Rubric:       input.Rubric,
-		JudgeModel:   input.JudgeModel,
-		Mode:         mode,
-		JudgeOptions: input.JudgeOptions,
+		Input:         input.Input,
+		TargetOutput:  targetOutput,
+		GroundTruth:   input.GroundTruth,
+		Rubric:        input.Rubric,
+		Judge:         input.Judge,
+		JudgeModel:    input.JudgeModel,
+		Mode:          mode,
+		PassThreshold: input.PassThreshold,
+		JudgeOptions:  input.JudgeOptions,
 	})
-	judgeResult.TargetMessage = final
+	judgeResult.TargetMessage = targetResult.Message
 	return judgeResult, err
 }
 
@@ -175,23 +197,25 @@ func ParseJSONJudgeResult(text string) (JSONJudgeResult, error) {
 }
 
 func (e *Evaluator) judgeJSON(ctx context.Context, input JudgeInput, result JudgeResult) (JudgeResult, error) {
+	judgeTarget := targetWithModelFallback(input.Judge, input.JudgeModel)
+	judgeModel := judgeTarget.modelForScoring()
 	prompt := formatJudgePrompt(input, ModeEvaluate)
-	options := appendOptions(input.JudgeOptions, withStructuredOutput(input.JudgeModel, scoreResponseFormat()))
+	options := appendOptions(input.JudgeOptions, withStructuredOutput(judgeModel, scoreResponseFormat()))
 
 	var lastErr error
 	for attempt := 0; attempt <= defaultRepairTurns; attempt++ {
 		if attempt > 0 {
 			prompt = repairPrompt(formatJudgePrompt(input, ModeEvaluate), result.RawJudgeOutput, lastErr)
 		}
-		final, err := e.clientOrDefault().Complete(ctx, input.JudgeModel, sigma.Request{
+		judgeResult, err := e.completeTarget(ctx, judgeTarget, sigma.Request{
 			Messages: []sigma.Message{sigma.UserText(prompt)},
-		}, options...)
-		result.JudgeMessage = final
+		}, options, map[string]any{"role": "judge", "mode": string(ModeEvaluate)})
+		result.JudgeMessage = judgeResult.Message
 		if err != nil {
 			return result, err
 		}
 
-		rawOutput, err := AssistantText(final)
+		rawOutput, err := targetResultText(judgeResult)
 		result.RawJudgeOutput = rawOutput
 		if err != nil {
 			lastErr = err
@@ -209,24 +233,25 @@ func (e *Evaluator) judgeJSON(ctx context.Context, input JudgeInput, result Judg
 }
 
 func (e *Evaluator) judgeGEval(ctx context.Context, input JudgeInput, result JudgeResult) (JudgeResult, error) {
-	final, err := e.clientOrDefault().Complete(ctx, input.JudgeModel, sigma.Request{
+	judgeTarget := targetWithModelFallback(input.Judge, input.JudgeModel)
+	judgeResult, err := e.completeTarget(ctx, judgeTarget, sigma.Request{
 		Messages: []sigma.Message{sigma.UserText(formatJudgePrompt(input, ModeGEval))},
 	}, appendOptions(
 		input.JudgeOptions,
 		sigma.WithReasoningLevel(sigma.ThinkingLevelOff),
 		withOpenAILogprobs(defaultTopLogprobs),
-	)...)
-	result.JudgeMessage = final
+	), map[string]any{"role": "judge", "mode": string(ModeGEval)})
+	result.JudgeMessage = judgeResult.Message
 	if err != nil {
 		return result, err
 	}
-	rawOutput, err := AssistantText(final)
+	rawOutput, err := targetResultText(judgeResult)
 	if err != nil {
 		return result, ErrGEvalLogprobsRequired
 	}
 	result.RawJudgeOutput = rawOutput
 
-	logprobs, ok := TokenLogprobsFromMetadata(final.ProviderMetadata)
+	logprobs, ok := targetResultLogprobs(judgeResult)
 	if !ok {
 		return result, ErrGEvalLogprobsRequired
 	}
@@ -234,11 +259,13 @@ func (e *Evaluator) judgeGEval(ctx context.Context, input JudgeInput, result Jud
 	if !ok {
 		return result, ErrGEvalLogprobsRequired
 	}
-	parsed, err := newJSONJudgeResult(score, "G-Eval logarithmic probability evaluation", score >= 3)
+	threshold := passThresholdOrDefault(input.PassThreshold)
+	parsed, err := newJSONJudgeResult(score, "G-Eval logarithmic probability evaluation", score >= threshold)
 	if err != nil {
 		return result, err
 	}
 	result.Logprobs = logprobs
+	result.PassThreshold = threshold
 	applyJSONJudgeResult(&result, parsed)
 	return result, nil
 }
@@ -248,6 +275,84 @@ func (e *Evaluator) clientOrDefault() Completer {
 		return sigma.NewClient()
 	}
 	return e.Client
+}
+
+func (e *Evaluator) targetCompleterOrDefault() TargetCompleter {
+	if e != nil && e.TargetCompleter != nil {
+		return e.TargetCompleter
+	}
+	if e != nil && e.Client != nil {
+		return SigmaTargetCompleter{Client: e.Client}
+	}
+	return SigmaTargetCompleter{}
+}
+
+func (e *Evaluator) completeTarget(ctx context.Context, target Target, request sigma.Request, options []sigma.Option, metadata map[string]any) (TargetResult, error) {
+	result, err := e.targetCompleterOrDefault().CompleteTarget(ctx, TargetRequest{
+		Target:   target,
+		Request:  request,
+		Options:  options,
+		Repeat:   1,
+		Metadata: metadata,
+	})
+	if err != nil {
+		return result, err
+	}
+	if strings.TrimSpace(result.Error) != "" {
+		return result, fmt.Errorf("%s", result.Error)
+	}
+	return result, nil
+}
+
+func targetWithModelFallback(target Target, model sigma.Model) Target {
+	if target.Provider == "" && target.ModelID == "" && target.ModelConfig == nil {
+		return TargetFromModel(model)
+	}
+	out := target
+	if out.Provider == "" {
+		out.Provider = model.Provider
+	}
+	if out.ModelID == "" {
+		out.ModelID = model.ID
+	}
+	if out.Name == "" {
+		out.Name = model.Name
+	}
+	if out.ModelConfig == nil && (model.Provider != "" || model.ID != "") {
+		modelCopy := model
+		if modelCopy.Provider == "" {
+			modelCopy.Provider = out.Provider
+		}
+		if modelCopy.ID == "" {
+			modelCopy.ID = out.ModelID
+		}
+		out.ModelConfig = &modelCopy
+	}
+	return out
+}
+
+func targetResultText(result TargetResult) (string, error) {
+	if strings.TrimSpace(result.Output) != "" {
+		return strings.TrimSpace(result.Output), nil
+	}
+	return AssistantText(result.Message)
+}
+
+func targetResultLogprobs(result TargetResult) ([]TokenLogprob, bool) {
+	if len(result.Logprobs) > 0 {
+		return result.Logprobs, true
+	}
+	if logprobs, ok := TokenLogprobsFromMetadata(result.ProviderMetadata); ok {
+		return logprobs, true
+	}
+	return TokenLogprobsFromMetadata(result.Message.ProviderMetadata)
+}
+
+func passThresholdOrDefault(threshold float64) float64 {
+	if threshold <= 0 {
+		return defaultGEvalPassThreshold
+	}
+	return threshold
 }
 
 func normalizeMode(mode Mode) Mode {

@@ -51,6 +51,68 @@ func TestEvaluatorRepairsInvalidJSONJudgeOutput(t *testing.T) {
 	}
 }
 
+func TestEvaluatorUsesTargetCompleterForTargetAndJudge(t *testing.T) {
+	t.Parallel()
+
+	completer := &recordingTargetCompleter{responses: []sigma.AssistantMessage{
+		textMessage("Bonjour"),
+		textMessage(`{"score":1,"rationale":"exact","passed":true}`),
+	}}
+	result, err := sigmaevals.NewTargetEvaluator(completer).Evaluate(context.Background(), sigmaevals.EvaluateInput{
+		Input:        "Translate hello to French.",
+		GroundTruth:  "Bonjour",
+		Rubric:       "Grade exactness only.",
+		Target:       sigmaevals.Target{Provider: "agent-runtime", ModelID: "worker"},
+		Judge:        sigmaevals.Target{Provider: "agent-runtime", ModelID: "judge"},
+		TargetPrompt: "Answer the task.",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.Passed || result.TargetOutput != "Bonjour" {
+		t.Fatalf("result = %+v, want target output judged through target completer", result)
+	}
+	if len(completer.requests) != 2 {
+		t.Fatalf("requests = %d, want target and judge calls", len(completer.requests))
+	}
+	if completer.requests[0].Target.ModelID != "worker" || completer.requests[1].Target.ModelID != "judge" {
+		t.Fatalf("requests = %+v, want target then judge targets", completer.requests)
+	}
+}
+
+func TestEvaluatorGEvalUsesCustomPassThreshold(t *testing.T) {
+	t.Parallel()
+
+	judgeMessage := textMessage("4")
+	judgeMessage.ProviderMetadata = map[string]any{
+		"logprobs": []sigmaevals.TokenLogprob{{
+			Token: "4",
+			TopLogprobs: []sigmaevals.TokenLogprob{
+				{Token: "4", Logprob: math.Log(0.75)},
+				{Token: "5", Logprob: math.Log(0.25)},
+			},
+		}},
+	}
+	result, err := sigmaevals.NewTargetEvaluator(&recordingTargetCompleter{responses: []sigma.AssistantMessage{judgeMessage}}).Judge(context.Background(), sigmaevals.JudgeInput{
+		TargetOutput:  "Bonjour",
+		Judge:         sigmaevals.Target{Provider: "agent-runtime", ModelID: "judge"},
+		Mode:          sigmaevals.ModeGEval,
+		PassThreshold: 4.5,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if math.Abs(result.Score-4.25) > 0.0001 {
+		t.Fatalf("score = %.4f, want 4.25", result.Score)
+	}
+	if result.Passed {
+		t.Fatalf("passed = true, want false with threshold 4.5")
+	}
+	if result.PassThreshold != 4.5 {
+		t.Fatalf("pass threshold = %.2f, want 4.5", result.PassThreshold)
+	}
+}
+
 func TestEvaluatorReturnsInvalidJudgeResultAfterRepairFails(t *testing.T) {
 	t.Parallel()
 

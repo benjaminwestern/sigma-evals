@@ -19,11 +19,13 @@ import (
 // final scores from score-token logprobs. It is the multi-metric version of
 // ModeGEval.
 type RubricGEvalScorer struct {
-	Client       Completer
-	JudgeModel   sigma.Model
-	Rubric       Rubric
-	TopLogprobs  int
-	JudgeOptions []sigma.Option
+	Client          Completer
+	TargetCompleter TargetCompleter
+	Judge           Target
+	JudgeModel      sigma.Model
+	Rubric          Rubric
+	TopLogprobs     int
+	JudgeOptions    []sigma.Option
 }
 
 // Name implements Scorer.
@@ -36,12 +38,15 @@ func (s RubricGEvalScorer) Score(ctx context.Context, input ScoreInput) (Score, 
 	if topLogprobs <= 0 {
 		topLogprobs = defaultTopLogprobs
 	}
-	final, err := clientOrDefault(s.Client).Complete(ctx, s.JudgeModel, sigma.Request{
+	judgeTarget := targetWithModelFallback(s.Judge, s.JudgeModel)
+	judgeModel := judgeTarget.modelForScoring()
+	evaluator := &Evaluator{Client: s.Client, TargetCompleter: s.TargetCompleter}
+	judgeResult, err := evaluator.completeTarget(ctx, judgeTarget, sigma.Request{
 		Messages: []sigma.Message{sigma.UserText(rubric.Prompt(input))},
 	}, appendOptions(
 		s.JudgeOptions,
 		sigma.WithReasoningLevel(sigma.ThinkingLevelOff),
-		withStructuredOutput(s.JudgeModel, map[string]any{
+		withStructuredOutput(judgeModel, map[string]any{
 			"type": "json_schema",
 			"json_schema": map[string]any{
 				"name":   "rubric_scores",
@@ -50,15 +55,15 @@ func (s RubricGEvalScorer) Score(ctx context.Context, input ScoreInput) (Score, 
 			},
 		}),
 		withOpenAILogprobs(topLogprobs),
-	)...)
+	), map[string]any{"role": "judge", "mode": "rubric_g_eval"})
 	if err != nil {
 		return Score{}, err
 	}
-	rawOutput, err := AssistantText(final)
+	rawOutput, err := targetResultText(judgeResult)
 	if err != nil {
 		return Score{}, ErrGEvalLogprobsRequired
 	}
-	logprobs, ok := TokenLogprobsFromMetadata(final.ProviderMetadata)
+	logprobs, ok := targetResultLogprobs(judgeResult)
 	if !ok {
 		return Score{}, ErrGEvalLogprobsRequired
 	}

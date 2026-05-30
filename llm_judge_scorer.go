@@ -14,11 +14,14 @@ import (
 
 // LLMJudgeScorer adapts Evaluator.Judge into the Scorer interface.
 type LLMJudgeScorer struct {
-	Client       Completer
-	JudgeModel   sigma.Model
-	Mode         Mode
-	Rubric       string
-	JudgeOptions []sigma.Option
+	Client          Completer
+	TargetCompleter TargetCompleter
+	Judge           Target
+	JudgeModel      sigma.Model
+	Mode            Mode
+	Rubric          string
+	PassThreshold   float64
+	JudgeOptions    []sigma.Option
 }
 
 // Name implements Scorer.
@@ -39,14 +42,17 @@ func (s LLMJudgeScorer) Score(ctx context.Context, input ScoreInput) (Score, err
 		groundTruth = strings.Join(input.Case.Expected.Answers, "\n")
 	}
 
-	result, err := NewEvaluator(s.Client).Judge(ctx, JudgeInput{
-		Input:        input.Case.Input,
-		TargetOutput: input.Output,
-		GroundTruth:  groundTruth,
-		Rubric:       rubric,
-		JudgeModel:   s.JudgeModel,
-		Mode:         s.Mode,
-		JudgeOptions: s.JudgeOptions,
+	evaluator := &Evaluator{Client: s.Client, TargetCompleter: s.TargetCompleter}
+	result, err := evaluator.Judge(ctx, JudgeInput{
+		Input:         input.Case.Input,
+		TargetOutput:  input.Output,
+		GroundTruth:   groundTruth,
+		Rubric:        rubric,
+		Judge:         s.Judge,
+		JudgeModel:    s.JudgeModel,
+		Mode:          s.Mode,
+		PassThreshold: s.PassThreshold,
+		JudgeOptions:  s.JudgeOptions,
 	})
 	if err != nil {
 		return Score{}, err

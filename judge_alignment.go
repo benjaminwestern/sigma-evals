@@ -32,14 +32,16 @@ type JudgeAlignmentCase struct {
 
 // JudgeAlignmentSpec configures a judge-quality eval against labelled cases.
 type JudgeAlignmentSpec struct {
-	Name        string               `json:"name"`
-	Version     string               `json:"version,omitempty"`
-	Cases       []JudgeAlignmentCase `json:"cases"`
-	JudgeModels []sigma.Model        `json:"judgeModels"`
-	Mode        Mode                 `json:"mode,omitempty"`
-	Options     []sigma.Option       `json:"-"`
-	Tolerance   float64              `json:"tolerance,omitempty"`
-	Concurrency int                  `json:"concurrency,omitempty"`
+	Name          string               `json:"name"`
+	Version       string               `json:"version,omitempty"`
+	Cases         []JudgeAlignmentCase `json:"cases"`
+	JudgeTargets  []Target             `json:"judgeTargets,omitempty"`
+	JudgeModels   []sigma.Model        `json:"judgeModels"`
+	Mode          Mode                 `json:"mode,omitempty"`
+	PassThreshold float64              `json:"passThreshold,omitempty"`
+	Options       []sigma.Option       `json:"-"`
+	Tolerance     float64              `json:"tolerance,omitempty"`
+	Concurrency   int                  `json:"concurrency,omitempty"`
 }
 
 // JudgeAlignmentRunResult records one judge alignment run.
@@ -101,8 +103,9 @@ func (e *Evaluator) EvaluateJudges(ctx context.Context, spec JudgeAlignmentSpec)
 	if len(spec.Cases) == 0 {
 		return JudgeAlignmentRunResult{}, fmt.Errorf("judge alignment spec must contain at least one case")
 	}
-	if len(spec.JudgeModels) == 0 {
-		return JudgeAlignmentRunResult{}, fmt.Errorf("at least one judge model is required")
+	judgeTargets := judgeAlignmentTargets(spec)
+	if len(judgeTargets) == 0 {
+		return JudgeAlignmentRunResult{}, fmt.Errorf("at least one judge target is required")
 	}
 	concurrency := spec.Concurrency
 	if concurrency <= 0 {
@@ -115,7 +118,7 @@ func (e *Evaluator) EvaluateJudges(ctx context.Context, spec JudgeAlignmentSpec)
 
 	startedAt := time.Now().UTC()
 	jobs := make(chan judgeAlignmentJob)
-	results := make([]JudgeAlignmentCaseResult, 0, len(spec.Cases)*len(spec.JudgeModels))
+	results := make([]JudgeAlignmentCaseResult, 0, len(spec.Cases)*len(judgeTargets))
 	var mu sync.Mutex
 
 	worker := func() {
@@ -128,7 +131,7 @@ func (e *Evaluator) EvaluateJudges(ctx context.Context, spec JudgeAlignmentSpec)
 	}
 
 	workerCount := concurrency
-	totalJobs := len(spec.Cases) * len(spec.JudgeModels)
+	totalJobs := len(spec.Cases) * len(judgeTargets)
 	if workerCount > totalJobs {
 		workerCount = totalJobs
 	}
@@ -147,13 +150,13 @@ func (e *Evaluator) EvaluateJudges(ctx context.Context, spec JudgeAlignmentSpec)
 			wg.Wait()
 			return JudgeAlignmentRunResult{}, fmt.Errorf("judge alignment case id is required")
 		}
-		for _, model := range spec.JudgeModels {
+		for _, target := range judgeTargets {
 			select {
 			case <-ctx.Done():
 				close(jobs)
 				wg.Wait()
 				return JudgeAlignmentRunResult{}, ctx.Err()
-			case jobs <- judgeAlignmentJob{Case: c, Model: model}:
+			case jobs <- judgeAlignmentJob{Case: c, Target: target, Model: target.modelForScoring()}:
 			}
 		}
 	}
@@ -178,9 +181,25 @@ func (e *Evaluator) EvaluateJudges(ctx context.Context, spec JudgeAlignmentSpec)
 	}, nil
 }
 
+func judgeAlignmentTargets(spec JudgeAlignmentSpec) []Target {
+	if len(spec.JudgeTargets) > 0 {
+		out := make([]Target, 0, len(spec.JudgeTargets))
+		for _, target := range spec.JudgeTargets {
+			out = append(out, targetWithModelFallback(target, sigma.Model{}))
+		}
+		return out
+	}
+	out := make([]Target, 0, len(spec.JudgeModels))
+	for _, model := range spec.JudgeModels {
+		out = append(out, TargetFromModel(model))
+	}
+	return out
+}
+
 type judgeAlignmentJob struct {
-	Case  JudgeAlignmentCase
-	Model sigma.Model
+	Case   JudgeAlignmentCase
+	Target Target
+	Model  sigma.Model
 }
 
 func (e *Evaluator) evaluateJudgeCase(ctx context.Context, spec JudgeAlignmentSpec, job judgeAlignmentJob, tolerance float64) JudgeAlignmentCaseResult {
@@ -194,13 +213,15 @@ func (e *Evaluator) evaluateJudgeCase(ctx context.Context, spec JudgeAlignmentSp
 	}
 
 	judgeResult, err := e.Judge(ctx, JudgeInput{
-		Input:        job.Case.Input,
-		TargetOutput: job.Case.TargetOutput,
-		GroundTruth:  job.Case.GroundTruth,
-		Rubric:       job.Case.Rubric,
-		JudgeModel:   job.Model,
-		Mode:         spec.Mode,
-		JudgeOptions: spec.Options,
+		Input:         job.Case.Input,
+		TargetOutput:  job.Case.TargetOutput,
+		GroundTruth:   job.Case.GroundTruth,
+		Rubric:        job.Case.Rubric,
+		Judge:         job.Target,
+		JudgeModel:    job.Model,
+		Mode:          spec.Mode,
+		PassThreshold: spec.PassThreshold,
+		JudgeOptions:  spec.Options,
 	})
 	result.DurationMS = time.Since(startedAt).Milliseconds()
 	if err != nil {

@@ -42,6 +42,8 @@ func run(args []string) error {
 		return runSmokeExamples(args[1:])
 	case "run-suite":
 		return runSuite(args[1:])
+	case "judge-output":
+		return runJudgeOutput(args[1:])
 	case "help", "-h", "--help":
 		usage()
 		return nil
@@ -56,10 +58,12 @@ func usage() {
 Commands:
   smoke-examples  Run all JSON examples with a scripted TargetCompleter, no network.
   run-suite       Run one suite against real Sigma targets.
+  judge-output    Score an existing output with an LLM judge target.
 
 Examples:
   sigma-evals smoke-examples --examples examples --out runs/smoke.json
-  sigma-evals run-suite --suite examples/generic/answer-aliases.json --target fireworks=accounts/fireworks/routers/kimi-k2p6-turbo`)
+  sigma-evals run-suite --suite examples/generic/answer-aliases.json --target fireworks=accounts/fireworks/routers/kimi-k2p6-turbo
+  sigma-evals judge-output --judge openai=gpt-4o --target-output "Bonjour" --ground-truth "Bonjour" --rubric "Grade exactness."`)
 }
 
 func runSmokeExamples(args []string) error {
@@ -172,6 +176,56 @@ func runSuite(args []string) error {
 	fmt.Fprintf(os.Stderr, "%s: %d/%d passed, failed=%d, errors=%d\n", result.SuiteName, result.Summary.Passed, result.Summary.Total, result.Summary.Failed, result.Summary.Errors)
 	if result.Summary.Failed > 0 || result.Summary.Errors > 0 {
 		return errors.New("suite run failed")
+	}
+	return nil
+}
+
+func runJudgeOutput(args []string) error {
+	flags := flag.NewFlagSet("judge-output", flag.ContinueOnError)
+	judgeRaw := flags.String("judge", "", "judge target as provider=model")
+	inputText := flags.String("input", "", "optional original input context")
+	targetOutput := flags.String("target-output", "", "existing target output to judge")
+	groundTruth := flags.String("ground-truth", "", "optional expected answer or reference")
+	rubric := flags.String("rubric", "", "judge rubric text")
+	mode := flags.String("mode", string(sigmaevals.ModeEvaluate), "judge mode: evaluate or g_eval")
+	passThreshold := flags.Float64("pass-threshold", 0, "G-Eval pass threshold on the 1-5 score scale; default 3")
+	outPath := flags.String("out", "", "optional JSON output path")
+	if err := flags.Parse(args); err != nil {
+		return err
+	}
+	if strings.TrimSpace(*judgeRaw) == "" {
+		return fmt.Errorf("--judge is required")
+	}
+	if strings.TrimSpace(*targetOutput) == "" {
+		return fmt.Errorf("--target-output is required")
+	}
+	judge, err := sigmaevals.ParseTarget(*judgeRaw)
+	if err != nil {
+		return err
+	}
+	registry := sigma.DefaultRegistry()
+	if err := registerCommonProviders(registry); err != nil {
+		return err
+	}
+	client := sigma.NewClient(sigma.WithRegistry(registry))
+	result, err := sigmaevals.NewTargetEvaluator(sigmaevals.SigmaTargetCompleter{Client: client, Registry: registry}).Judge(context.Background(), sigmaevals.JudgeInput{
+		Input:         *inputText,
+		TargetOutput:  *targetOutput,
+		GroundTruth:   *groundTruth,
+		Rubric:        *rubric,
+		Judge:         judge,
+		Mode:          sigmaevals.Mode(*mode),
+		PassThreshold: *passThreshold,
+	})
+	if err != nil {
+		return err
+	}
+	if err := writeJSON(*outPath, result); err != nil {
+		return err
+	}
+	fmt.Fprintf(os.Stderr, "judge-output: score=%.3f passed=%t mode=%s\n", result.Score, result.Passed, result.Mode)
+	if !result.Passed {
+		return errors.New("judge-output failed")
 	}
 	return nil
 }

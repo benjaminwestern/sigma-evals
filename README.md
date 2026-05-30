@@ -47,6 +47,16 @@ go run ./cmd/sigma-evals run-suite \
   --out runs/answer-aliases.json
 ```
 
+Judge an existing output through the same target seam:
+
+```bash
+go run ./cmd/sigma-evals judge-output \
+  --judge openai=gpt-4o \
+  --target-output "Bonjour" \
+  --ground-truth "Bonjour" \
+  --rubric "Grade exact translation correctness."
+```
+
 ## What it provides
 
 - A portable `Suite` / `Case` / `Expected` JSON model for text, chat, multiple-choice, JSON, and tool-call evals.
@@ -86,6 +96,22 @@ result, err := runner.Run(ctx, sigmaevals.TargetRunSpec{
 })
 ```
 
+LLM judges use the same seam, so agent runtimes do not need to pretend to be a
+`sigma.Client`:
+
+```go
+evaluator := sigmaevals.NewTargetEvaluator(myTargetCompleter)
+
+judge, err := evaluator.Judge(ctx, sigmaevals.JudgeInput{
+    TargetOutput:  generatedAnswer,
+    GroundTruth:   "Bonjour",
+    Rubric:        "Grade exact translation correctness.",
+    Judge:         sigmaevals.Target{Provider: "agent-runtime", ModelID: "judge"},
+    Mode:          sigmaevals.ModeGEval,
+    PassThreshold: 4.0, // optional; defaults to 3 on the 1-5 G-Eval scale
+})
+```
+
 ## Example suites
 
 Working JSON suites live in [`examples`](examples). They are intentionally small
@@ -101,7 +127,7 @@ showcases, not serious model-quality benchmarks.
 The CLIs under [`cmd`](cmd) are reference consumers of the SDK interfaces, not a
 hosted product surface.
 
-- [`cmd/sigma-evals`](cmd/sigma-evals) runs local smoke examples and real suites against Sigma targets.
+- [`cmd/sigma-evals`](cmd/sigma-evals) runs local smoke examples, real suites against Sigma targets, and one-off LLM judge checks for existing outputs.
 - [`cmd/sigma-evals-live`](cmd/sigma-evals-live) is an optional live harness for provider-backed needle and tool-calling checks. It requires `FIREWORKS_API_KEY` and `OPENCODE_API_KEY`.
 
 ## Scoring methods
@@ -123,10 +149,12 @@ The core package covers:
 ## Judge-alignment example
 
 ```go
-alignment, err := sigmaevals.NewEvaluator(client).EvaluateJudges(ctx, sigmaevals.JudgeAlignmentSpec{
-    Name:        "judge-alignment-smoke",
-    JudgeModels: []sigma.Model{judgeModel},
-    Tolerance:   0.5,
+alignment, err := sigmaevals.NewTargetEvaluator(
+    sigmaevals.NewSigmaTargetCompleter(client),
+).EvaluateJudges(ctx, sigmaevals.JudgeAlignmentSpec{
+    Name:         "judge-alignment-smoke",
+    JudgeTargets: []sigmaevals.Target{sigmaevals.TargetFromModel(judgeModel)},
+    Tolerance:    0.5,
     Cases: []sigmaevals.JudgeAlignmentCase{
         {
             ID:             "correct-answer",
