@@ -78,10 +78,9 @@ func (e *Evaluator) PairwiseJudge(ctx context.Context, input PairwiseJudgeInput)
 
 func (e *Evaluator) pairwiseJudgeOnce(ctx context.Context, input PairwiseJudgeInput, answerA string, answerB string) (PairwiseSingleResult, error) {
 	judgeTarget := targetWithModelFallback(input.Judge, input.JudgeModel)
-	judgeModel := judgeTarget.modelForScoring()
 	judgeResult, err := e.completeTarget(ctx, judgeTarget, sigma.Request{
 		Messages: []sigma.Message{sigma.UserText(formatPairwisePrompt(input, answerA, answerB))},
-	}, appendOptions(input.JudgeOptions, withStructuredOutput(judgeModel, pairwiseResponseFormat())), map[string]any{"role": "judge", "mode": "pairwise"})
+	}, appendOptions(input.JudgeOptions, withStructuredOutput(pairwiseResponseFormat())), map[string]any{"role": "judge", "mode": "pairwise"})
 	result := PairwiseSingleResult{JudgeMessage: judgeResult.Message}
 	if err != nil {
 		return result, err

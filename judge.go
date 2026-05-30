@@ -198,9 +198,8 @@ func ParseJSONJudgeResult(text string) (JSONJudgeResult, error) {
 
 func (e *Evaluator) judgeJSON(ctx context.Context, input JudgeInput, result JudgeResult) (JudgeResult, error) {
 	judgeTarget := targetWithModelFallback(input.Judge, input.JudgeModel)
-	judgeModel := judgeTarget.modelForScoring()
 	prompt := formatJudgePrompt(input, ModeEvaluate)
-	options := appendOptions(input.JudgeOptions, withStructuredOutput(judgeModel, scoreResponseFormat()))
+	options := appendOptions(input.JudgeOptions, withStructuredOutput(scoreResponseFormat()))
 
 	var lastErr error
 	for attempt := 0; attempt <= defaultRepairTurns; attempt++ {

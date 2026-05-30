@@ -39,14 +39,13 @@ func (s RubricGEvalScorer) Score(ctx context.Context, input ScoreInput) (Score, 
 		topLogprobs = defaultTopLogprobs
 	}
 	judgeTarget := targetWithModelFallback(s.Judge, s.JudgeModel)
-	judgeModel := judgeTarget.modelForScoring()
 	evaluator := &Evaluator{Client: s.Client, TargetCompleter: s.TargetCompleter}
 	judgeResult, err := evaluator.completeTarget(ctx, judgeTarget, sigma.Request{
 		Messages: []sigma.Message{sigma.UserText(rubric.Prompt(input))},
 	}, appendOptions(
 		s.JudgeOptions,
 		sigma.WithReasoningLevel(sigma.ThinkingLevelOff),
-		withStructuredOutput(judgeModel, map[string]any{
+		withStructuredOutput(map[string]any{
 			"type": "json_schema",
 			"json_schema": map[string]any{
 				"name":   "rubric_scores",

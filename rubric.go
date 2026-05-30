@@ -203,11 +203,10 @@ func (s RubricJudgeScorer) Name() string { return "rubric_judge" }
 func (s RubricJudgeScorer) Score(ctx context.Context, input ScoreInput) (Score, error) {
 	rubric := s.Rubric.WithCase(input.Case)
 	judgeTarget := targetWithModelFallback(s.Judge, s.JudgeModel)
-	judgeModel := judgeTarget.modelForScoring()
 	evaluator := &Evaluator{Client: s.Client, TargetCompleter: s.TargetCompleter}
 	judgeResult, err := evaluator.completeTarget(ctx, judgeTarget, sigma.Request{
 		Messages: []sigma.Message{sigma.UserText(rubric.Prompt(input))},
-	}, appendOptions(s.JudgeOptions, withStructuredOutput(judgeModel, map[string]any{
+	}, appendOptions(s.JudgeOptions, withStructuredOutput(map[string]any{
 		"type": "json_schema",
 		"json_schema": map[string]any{
 			"name":   "rubric_scores",
