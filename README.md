@@ -11,8 +11,8 @@ stable.
 
 ## Status
 
-Public preview. The module builds from a fresh clone and pins Sigma by the
-pseudo-version in `go.mod`; there is no local `replace` dependency.
+Public preview. The module builds from a fresh clone and pins Sigma `v0.2.0`
+in `go.mod`; there is no local `replace` dependency.
 
 ## Quick start
 
