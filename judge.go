@@ -375,7 +375,7 @@ func formatTargetPrompt(prompt string, input string) string {
 func formatJudgePrompt(input JudgeInput, mode Mode) string {
 	var b strings.Builder
 	if strings.TrimSpace(input.Rubric) != "" {
-		b.WriteString(input.Rubric)
+		b.WriteString(GetRubricPrompt(input.Rubric))
 		b.WriteString("\n\n")
 	}
 	if strings.TrimSpace(input.Input) != "" {

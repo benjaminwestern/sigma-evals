@@ -9,7 +9,9 @@
 // The package owns portable eval contracts and repeatable mechanics: rendering
 // cases into sigma.Request values, running the same cases across caller-provided
 // targets, applying deterministic scorers or TargetCompleter-backed LLM judges,
-// testing judges against labelled examples, and returning portable result records.
+// batch-judging target or saved outputs, testing judges against labelled examples,
+// comparing repeated-run variance across eval layers, and returning portable
+// result records.
 // It intentionally does not own third-party datasets, hosted leaderboards, app
 // persistence, UI, or daemon/session lifecycle.
 package sigmaevals

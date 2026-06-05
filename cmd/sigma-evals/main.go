@@ -11,6 +11,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -50,6 +51,16 @@ func run(args []string) error {
 		return runSuite(args[1:])
 	case "judge-output":
 		return runJudgeOutput(args[1:])
+	case "judge-batch":
+		return runJudgeBatch(args[1:])
+	case "judge-alignment":
+		return runJudgeAlignment(args[1:])
+	case "list-rubrics":
+		return runListRubrics(args[1:])
+	case "variance-report":
+		return runVarianceReport(args[1:])
+	case "compare-variance":
+		return runCompareVariance(args[1:])
 	case "help", "-h", "--help":
 		usage()
 		return nil
@@ -62,20 +73,28 @@ func usage() {
 	fmt.Fprintln(os.Stderr, `sigma-evals is a small SDK consumer for the sigmaevals interfaces.
 
 Commands:
-  smoke-examples  Run all JSON examples with a scripted TargetCompleter, no network.
-  run-suite       Run one suite against real Sigma targets.
-  judge-output    Score an existing output with an LLM judge target.
+  smoke-examples    Run all JSON examples with a scripted TargetCompleter, no network.
+  run-suite         Run one suite against real Sigma targets.
+  judge-output      Score an existing output with an LLM judge target.
+  judge-batch       Score many target or saved outputs with an LLM judge.
+  judge-alignment   Evaluate judge quality against labelled examples.
+  list-rubrics      Print built-in rubric IDs, aliases, and prompts.
+  variance-report   Build a variance report from suite, batch, alignment, or samples JSON/JSONL.
+  compare-variance  Compare baseline/current variance reports.
 
 Examples:
   sigma-evals smoke-examples --examples examples --out runs/smoke.json
-  sigma-evals run-suite --suite examples/generic/answer-aliases.json --target fireworks=accounts/fireworks/routers/kimi-k2p6-turbo --session-id nightly --cache-retention long
-  sigma-evals judge-output --judge openai=gpt-4o --target-output "Bonjour" --ground-truth "Bonjour" --rubric "Grade exactness."`)
+  sigma-evals run-suite --suite examples/generic/answer-aliases.json --target fireworks=accounts/fireworks/routers/kimi-k2p6-turbo --repeat 100 --samples-out runs/today.jsonl
+  sigma-evals judge-output --judge openai=gpt-4o --target-output "Bonjour" --ground-truth "Bonjour" --rubric accuracy
+  sigma-evals variance-report --layer suite --input runs/today.json --out runs/today-variance.json
+  sigma-evals compare-variance --baseline runs/today-variance.json --current runs/tomorrow-variance.json`)
 }
 
 func runSmokeExamples(args []string) error {
 	flags := flag.NewFlagSet("smoke-examples", flag.ContinueOnError)
 	examplesDir := flags.String("examples", "examples", "directory containing example JSON suites")
-	outPath := flags.String("out", "", "optional JSON output path")
+	outPath := flags.String("out", "", "optional output path; stdout when omitted")
+	outFormat := flags.String("format", outputJSON, "output format: json, jsonl, or md")
 	if err := flags.Parse(args); err != nil {
 		return err
 	}
@@ -112,7 +131,7 @@ func runSmokeExamples(args []string) error {
 		summary.Errors += result.Summary.Errors
 	}
 	summary.EndedAt = time.Now().UTC()
-	if err := writeJSON(*outPath, summary); err != nil {
+	if err := writeOutput(*outPath, *outFormat, summary); err != nil {
 		return err
 	}
 	fmt.Fprintf(os.Stderr, "smoke examples: %d/%d passed, failed=%d, errors=%d\n", summary.Passed, summary.Total, summary.Failed, summary.Errors)
@@ -135,7 +154,9 @@ type smokeSummary struct {
 func runSuite(args []string) error {
 	flags := flag.NewFlagSet("run-suite", flag.ContinueOnError)
 	suitePath := flags.String("suite", "", "JSON suite file")
-	outPath := flags.String("out", "", "optional JSON output path")
+	outPath := flags.String("out", "", "optional output path; stdout when omitted")
+	outFormat := flags.String("format", outputJSON, "output format: json, jsonl, or md")
+	samplesOutPath := flags.String("samples-out", "", "optional variance samples JSONL output path")
 	repeats := flags.Int("repeat", 1, "number of repeats per target")
 	concurrency := flags.Int("concurrency", 1, "number of concurrent target attempts")
 	sessionID := flags.String("session-id", "", "optional Sigma session ID for provider affinity and prompt-cache keys")
@@ -183,7 +204,10 @@ func runSuite(args []string) error {
 	if err != nil {
 		return err
 	}
-	if err := writeJSON(*outPath, result); err != nil {
+	if err := writeOutput(*outPath, *outFormat, result); err != nil {
+		return err
+	}
+	if err := writeSamplesJSONL(*samplesOutPath, sigmaevals.VarianceSamplesFromRunResult(result)); err != nil {
 		return err
 	}
 	fmt.Fprintf(os.Stderr, "%s: %d/%d passed, failed=%d, errors=%d\n", result.SuiteName, result.Summary.Passed, result.Summary.Total, result.Summary.Failed, result.Summary.Errors)
@@ -204,7 +228,8 @@ func runJudgeOutput(args []string) error {
 	passThreshold := flags.Float64("pass-threshold", 0, "G-Eval pass threshold on the 1-5 score scale; default 3")
 	sessionID := flags.String("session-id", "", "optional Sigma session ID for provider affinity and prompt-cache keys")
 	cacheRetention := flags.String("cache-retention", "", "optional provider prompt-cache retention: none, short, long, ephemeral, or persistent")
-	outPath := flags.String("out", "", "optional JSON output path")
+	outPath := flags.String("out", "", "optional output path; stdout when omitted")
+	outFormat := flags.String("format", outputJSON, "output format: json, jsonl, or md")
 	if err := flags.Parse(args); err != nil {
 		return err
 	}
@@ -240,12 +265,236 @@ func runJudgeOutput(args []string) error {
 	if err != nil {
 		return err
 	}
-	if err := writeJSON(*outPath, result); err != nil {
+	if err := writeOutput(*outPath, *outFormat, result); err != nil {
 		return err
 	}
 	fmt.Fprintf(os.Stderr, "judge-output: score=%.3f passed=%t mode=%s\n", result.Score, result.Passed, result.Mode)
 	if !result.Passed {
 		return errors.New("judge-output failed")
+	}
+	return nil
+}
+
+func runJudgeBatch(args []string) error {
+	flags := flag.NewFlagSet("judge-batch", flag.ContinueOnError)
+	name := flags.String("name", "batch-judge", "batch run name")
+	casesPath := flags.String("cases", "", "JSON file containing an array of sigmaevals.JudgeCase")
+	targetRaw := flags.String("target", "", "optional target as provider=model; required when cases omit targetOutput")
+	judgeRaw := flags.String("judge", "", "judge target as provider=model")
+	rubric := flags.String("rubric", "", "judge rubric ID or text")
+	targetPrompt := flags.String("target-prompt", "", "optional prompt prepended to case inputs for target calls")
+	mode := flags.String("mode", string(sigmaevals.ModeEvaluate), "judge mode: evaluate or g_eval")
+	passThreshold := flags.Float64("pass-threshold", 0, "G-Eval pass threshold on the 1-5 score scale; default 3")
+	repeats := flags.Int("repeat", 1, "number of repeats per judge case")
+	concurrency := flags.Int("concurrency", 1, "number of concurrent judge cases")
+	sessionID := flags.String("session-id", "", "optional Sigma session ID for provider affinity and prompt-cache keys")
+	cacheRetention := flags.String("cache-retention", "", "optional provider prompt-cache retention")
+	outPath := flags.String("out", "", "optional output path; stdout when omitted")
+	outFormat := flags.String("format", outputJSON, "output format: json, jsonl, or md")
+	samplesOutPath := flags.String("samples-out", "", "optional variance samples JSONL output path")
+	if err := flags.Parse(args); err != nil {
+		return err
+	}
+	if strings.TrimSpace(*casesPath) == "" {
+		return fmt.Errorf("--cases is required")
+	}
+	if strings.TrimSpace(*judgeRaw) == "" {
+		return fmt.Errorf("--judge is required")
+	}
+	cases, err := readJudgeCases(*casesPath)
+	if err != nil {
+		return err
+	}
+	judge, err := sigmaevals.ParseTarget(*judgeRaw)
+	if err != nil {
+		return err
+	}
+	var target sigmaevals.Target
+	if strings.TrimSpace(*targetRaw) != "" {
+		target, err = sigmaevals.ParseTarget(*targetRaw)
+		if err != nil {
+			return err
+		}
+	}
+	registry := sigma.DefaultRegistry()
+	if err := registerCommonProviders(registry); err != nil {
+		return err
+	}
+	options, err := requestOptions(*sessionID, *cacheRetention)
+	if err != nil {
+		return err
+	}
+	client := sigma.NewClient(sigma.WithRegistry(registry))
+	result, err := sigmaevals.NewTargetEvaluator(sigmaevals.SigmaTargetCompleter{Client: client, Registry: registry}).EvaluateBatch(context.Background(), sigmaevals.BatchJudgeSpec{
+		Name:          *name,
+		Cases:         cases,
+		Target:        target,
+		Judge:         judge,
+		Mode:          sigmaevals.Mode(*mode),
+		Rubric:        *rubric,
+		TargetPrompt:  *targetPrompt,
+		PassThreshold: *passThreshold,
+		TargetOptions: options,
+		JudgeOptions:  options,
+		Repeats:       *repeats,
+		Concurrency:   *concurrency,
+	})
+	if err != nil {
+		return err
+	}
+	if err := writeOutput(*outPath, *outFormat, result); err != nil {
+		return err
+	}
+	if err := writeSamplesJSONL(*samplesOutPath, sigmaevals.VarianceSamplesFromBatchJudgeResult(result)); err != nil {
+		return err
+	}
+	fmt.Fprintf(os.Stderr, "%s: %d/%d passed, failed=%d, errors=%d\n", result.Name, result.Summary.Passed, result.Summary.Total, result.Summary.Failed, result.Summary.Errors)
+	if result.Summary.Errors > 0 {
+		return errors.New("batch judge recorded errors")
+	}
+	return nil
+}
+
+func runJudgeAlignment(args []string) error {
+	flags := flag.NewFlagSet("judge-alignment", flag.ContinueOnError)
+	name := flags.String("name", "judge-alignment", "judge alignment run name")
+	casesPath := flags.String("cases", "", "JSON file containing an array of sigmaevals.JudgeAlignmentCase")
+	judgeRaw := flags.String("judge", "", "judge target as provider=model")
+	mode := flags.String("mode", string(sigmaevals.ModeEvaluate), "judge mode: evaluate or g_eval")
+	passThreshold := flags.Float64("pass-threshold", 0, "G-Eval pass threshold on the 1-5 score scale; default 3")
+	tolerance := flags.Float64("tolerance", 0.5, "score tolerance for alignment accuracy")
+	concurrency := flags.Int("concurrency", 1, "number of concurrent judge cases")
+	sessionID := flags.String("session-id", "", "optional Sigma session ID for provider affinity and prompt-cache keys")
+	cacheRetention := flags.String("cache-retention", "", "optional provider prompt-cache retention")
+	outPath := flags.String("out", "", "optional output path; stdout when omitted")
+	outFormat := flags.String("format", outputJSON, "output format: json, jsonl, or md")
+	samplesOutPath := flags.String("samples-out", "", "optional variance samples JSONL output path")
+	if err := flags.Parse(args); err != nil {
+		return err
+	}
+	if strings.TrimSpace(*casesPath) == "" {
+		return fmt.Errorf("--cases is required")
+	}
+	if strings.TrimSpace(*judgeRaw) == "" {
+		return fmt.Errorf("--judge is required")
+	}
+	cases, err := readJudgeAlignmentCases(*casesPath)
+	if err != nil {
+		return err
+	}
+	judge, err := sigmaevals.ParseTarget(*judgeRaw)
+	if err != nil {
+		return err
+	}
+	registry := sigma.DefaultRegistry()
+	if err := registerCommonProviders(registry); err != nil {
+		return err
+	}
+	options, err := requestOptions(*sessionID, *cacheRetention)
+	if err != nil {
+		return err
+	}
+	client := sigma.NewClient(sigma.WithRegistry(registry))
+	result, err := sigmaevals.NewTargetEvaluator(sigmaevals.SigmaTargetCompleter{Client: client, Registry: registry}).EvaluateJudges(context.Background(), sigmaevals.JudgeAlignmentSpec{
+		Name:          *name,
+		Cases:         cases,
+		JudgeTargets:  []sigmaevals.Target{judge},
+		Mode:          sigmaevals.Mode(*mode),
+		PassThreshold: *passThreshold,
+		Options:       options,
+		Tolerance:     *tolerance,
+		Concurrency:   *concurrency,
+	})
+	if err != nil {
+		return err
+	}
+	if err := writeOutput(*outPath, *outFormat, result); err != nil {
+		return err
+	}
+	if err := writeSamplesJSONL(*samplesOutPath, sigmaevals.VarianceSamplesFromJudgeAlignmentResult(result)); err != nil {
+		return err
+	}
+	fmt.Fprintf(os.Stderr, "%s: total=%d errors=%d tolerance_accuracy=%.3f classification_accuracy=%.3f\n", result.Name, result.Summary.Total, result.Summary.Errors, result.Summary.ToleranceAccuracy, result.Summary.Classification.Accuracy)
+	if result.Summary.Errors > 0 {
+		return errors.New("judge alignment recorded errors")
+	}
+	return nil
+}
+
+func runListRubrics(args []string) error {
+	flags := flag.NewFlagSet("list-rubrics", flag.ContinueOnError)
+	outPath := flags.String("out", "", "optional output path; stdout when omitted")
+	outFormat := flags.String("format", outputJSON, "output format: json, jsonl, or md")
+	if err := flags.Parse(args); err != nil {
+		return err
+	}
+	return writeOutput(*outPath, *outFormat, sigmaevals.DefaultRubricRegistry.List())
+}
+
+func runVarianceReport(args []string) error {
+	flags := flag.NewFlagSet("variance-report", flag.ContinueOnError)
+	layer := flags.String("layer", "suite", "input layer: suite, batch-judge, judge-alignment, or samples")
+	inputPath := flags.String("input", "", "input JSON result file, or JSONL samples when --layer samples")
+	name := flags.String("name", "", "optional report name override")
+	outPath := flags.String("out", "", "optional output path; stdout when omitted")
+	outFormat := flags.String("format", outputJSON, "output format: json, jsonl, or md")
+	samplesOutPath := flags.String("samples-out", "", "optional normalized variance samples JSONL output path")
+	if err := flags.Parse(args); err != nil {
+		return err
+	}
+	if strings.TrimSpace(*inputPath) == "" {
+		return fmt.Errorf("--input is required")
+	}
+	samples, defaultName, err := varianceSamplesFromFile(*layer, *inputPath)
+	if err != nil {
+		return err
+	}
+	reportName := firstNonEmpty(*name, defaultName)
+	report := sigmaevals.BuildVarianceReport(reportName, samples)
+	if err := writeOutput(*outPath, *outFormat, report); err != nil {
+		return err
+	}
+	if err := writeSamplesJSONL(*samplesOutPath, samples); err != nil {
+		return err
+	}
+	printVarianceReport(os.Stderr, report)
+	return nil
+}
+
+func runCompareVariance(args []string) error {
+	flags := flag.NewFlagSet("compare-variance", flag.ContinueOnError)
+	baselinePath := flags.String("baseline", "", "baseline VarianceReport JSON file")
+	currentPath := flags.String("current", "", "current VarianceReport JSON file")
+	confidenceZ := flags.Float64("confidence-z", 1.96, "two-sided z threshold")
+	minPassRateDelta := flags.Float64("min-pass-rate-delta", 0, "minimum absolute pass-rate delta for direction")
+	minMeanScoreDelta := flags.Float64("min-mean-score-delta", 0, "minimum absolute mean-score delta for direction")
+	outPath := flags.String("out", "", "optional output path; stdout when omitted")
+	outFormat := flags.String("format", outputJSON, "output format: json, jsonl, or md")
+	if err := flags.Parse(args); err != nil {
+		return err
+	}
+	if strings.TrimSpace(*baselinePath) == "" || strings.TrimSpace(*currentPath) == "" {
+		return fmt.Errorf("--baseline and --current are required")
+	}
+	var baseline sigmaevals.VarianceReport
+	if err := readJSON(*baselinePath, &baseline); err != nil {
+		return err
+	}
+	var current sigmaevals.VarianceReport
+	if err := readJSON(*currentPath, &current); err != nil {
+		return err
+	}
+	comparison := sigmaevals.CompareVarianceReports(baseline, current, sigmaevals.VarianceCompareOptions{
+		ConfidenceZ:       *confidenceZ,
+		MinPassRateDelta:  *minPassRateDelta,
+		MinMeanScoreDelta: *minMeanScoreDelta,
+	})
+	if err := writeOutput(*outPath, *outFormat, comparison); err != nil {
+		return err
+	}
+	printVarianceComparison(os.Stderr, comparison)
+	if comparison.Summary.Regressions > 0 {
+		return errors.New("variance comparison found regressions")
 	}
 	return nil
 }
@@ -386,17 +635,147 @@ func requestKey(request sigma.Request) string {
 	return string(b)
 }
 
-func writeJSON(path string, value any) error {
-	data, err := json.MarshalIndent(value, "", "  ")
+func printVarianceReport(w io.Writer, report sigmaevals.VarianceReport) {
+	fmt.Fprintf(w, "%s: groups=%d pass_rate=%.3f mean_score=%.3f stddev=%.3f stderr=%.3f unique_outputs=%d errors=%d\n", report.Name, len(report.Groups), report.Total.PassRate, report.Total.MeanScore, report.Total.StdDevScore, report.Total.StdErrScore, report.Total.UniqueOutputs, report.Total.Errors)
+	for _, group := range report.Groups {
+		fmt.Fprintf(w, "  %s model=%s scorer=%s n=%d pass_rate=%.3f mean=%.3f stddev=%.3f stderr=%.3f unique_outputs=%d errors=%d\n",
+			group.Key.CaseID,
+			valueOrDash(group.Key.Model),
+			valueOrDash(group.Key.Scorer),
+			group.Count,
+			group.PassRate,
+			group.MeanScore,
+			group.StdDevScore,
+			group.StdErrScore,
+			group.UniqueOutputs,
+			group.Errors,
+		)
+	}
+}
+
+func printVarianceComparison(w io.Writer, comparison sigmaevals.VarianceComparison) {
+	fmt.Fprintf(w, "%s vs %s: regressions=%d improvements=%d stable=%d new=%d missing=%d\n", comparison.BaselineName, comparison.CurrentName, comparison.Summary.Regressions, comparison.Summary.Improvements, comparison.Summary.Stable, comparison.Summary.New, comparison.Summary.Missing)
+	for _, delta := range comparison.Deltas {
+		if delta.Direction == "stable" {
+			continue
+		}
+		fmt.Fprintf(w, "  %s %s model=%s scorer=%s pass_delta=%.3f score_delta=%.3f score_z=%.3f pass_z=%.3f significant=%t\n",
+			delta.Direction,
+			delta.Key.CaseID,
+			valueOrDash(delta.Key.Model),
+			valueOrDash(delta.Key.Scorer),
+			delta.DeltaPassRate,
+			delta.DeltaMeanScore,
+			delta.ScoreZ,
+			delta.PassRateZ,
+			delta.Significant,
+		)
+	}
+}
+
+func valueOrDash(value string) string {
+	if strings.TrimSpace(value) == "" {
+		return "-"
+	}
+	return value
+}
+
+func readJudgeCases(path string) ([]sigmaevals.JudgeCase, error) {
+	var cases []sigmaevals.JudgeCase
+	if err := readJSON(path, &cases); err != nil {
+		return nil, err
+	}
+	return cases, nil
+}
+
+func readJudgeAlignmentCases(path string) ([]sigmaevals.JudgeAlignmentCase, error) {
+	var cases []sigmaevals.JudgeAlignmentCase
+	if err := readJSON(path, &cases); err != nil {
+		return nil, err
+	}
+	return cases, nil
+}
+
+func varianceSamplesFromFile(layer string, path string) ([]sigmaevals.VarianceSample, string, error) {
+	switch strings.ToLower(strings.TrimSpace(layer)) {
+	case "samples", "sample", "jsonl":
+		file, err := os.Open(path)
+		if err != nil {
+			return nil, "", err
+		}
+		defer file.Close()
+		samples, err := sigmaevals.ReadVarianceSamplesJSONL(file)
+		return samples, filepath.Base(path), err
+	case "suite", "run", "run-result":
+		var run sigmaevals.RunResult
+		if err := readJSON(path, &run); err != nil {
+			return nil, "", err
+		}
+		return sigmaevals.VarianceSamplesFromRunResult(run), run.SuiteName, nil
+	case "batch", "batch-judge", "batch_judge", "judge-batch":
+		var run sigmaevals.BatchJudgeResult
+		if err := readJSON(path, &run); err != nil {
+			return nil, "", err
+		}
+		return sigmaevals.VarianceSamplesFromBatchJudgeResult(run), run.Name, nil
+	case "judge-alignment", "judge_alignment", "alignment":
+		var run sigmaevals.JudgeAlignmentRunResult
+		if err := readJSON(path, &run); err != nil {
+			return nil, "", err
+		}
+		return sigmaevals.VarianceSamplesFromJudgeAlignmentResult(run), run.Name, nil
+	default:
+		return nil, "", fmt.Errorf("unknown variance layer %q", layer)
+	}
+}
+
+func readJSON(path string, value any) error {
+	data, err := os.ReadFile(path)
 	if err != nil {
 		return err
 	}
+	return json.Unmarshal(data, value)
+}
+
+func writeSamplesJSONL(path string, samples []sigmaevals.VarianceSample) error {
 	if strings.TrimSpace(path) == "" {
-		fmt.Println(string(data))
 		return nil
 	}
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return err
 	}
-	return os.WriteFile(path, data, 0o644)
+	file, err := os.Create(path)
+	if err != nil {
+		return err
+	}
+	defer file.Close()
+	return sigmaevals.WriteVarianceSamplesJSONL(file, samples)
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return value
+		}
+	}
+	return ""
+}
+
+func writeJSON(path string, value any) error {
+	return writeOutput(path, outputJSON, value)
+}
+
+func writeOutput(path string, format string, value any) error {
+	if strings.TrimSpace(path) == "" {
+		return writeRenderedOutput(os.Stdout, format, value)
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return err
+	}
+	file, err := os.Create(path)
+	if err != nil {
+		return err
+	}
+	defer file.Close()
+	return writeRenderedOutput(file, format, value)
 }

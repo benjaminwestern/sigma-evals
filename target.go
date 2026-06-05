@@ -57,8 +57,8 @@ type TargetResult struct {
 }
 
 // TargetCompleter is the SDK boundary for running model calls. Direct Sigma,
-// agentic-control sessions, local models, hosted apps, or tests can implement
-// this without sigma-evals depending on their app machinery.
+// agent runtimes, local models, hosted apps, or tests can implement this without
+// sigma-evals depending on their app machinery.
 type TargetCompleter interface {
 	CompleteTarget(context.Context, TargetRequest) (TargetResult, error)
 }

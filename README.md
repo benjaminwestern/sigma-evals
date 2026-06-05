@@ -63,14 +63,16 @@ go run ./cmd/sigma-evals judge-output \
 - SDK runners for direct Sigma models, caller-provided targets, raw fanout, and scoring existing outputs without regenerating completions.
 - Provider-neutral error classification in result records using Sigma's typed auth, quota, billing, rate-limit, transient, context-overflow, invalid-request, and provider error classes.
 - Deterministic scorers for exact, normalised, contains, regex, JSON structure, token F1, multiple choice, pass@k, and expected tool calls.
-- LLM-as-judge helpers for strict JSON judges, pairwise judging, G-Eval score-token weighting, and weighted rubric scoring.
+- LLM-as-judge helpers for strict JSON judges, pairwise judging, G-Eval score-token weighting, batch judging, and weighted rubric scoring.
+- Built-in single-prompt rubrics for accuracy, helpfulness, persona drift, conciseness, and JSON strictness.
+- Variance reports and baseline/current comparisons across suite runs, batch judges, and judge alignment so repeated evals can separate model drift from sampling noise.
 - Judge-alignment evaluation with regression, classification, calibration, and tolerance metrics against labelled examples.
 - Small CLI consumers under `cmd/` plus working JSON examples under `examples/` for local smoke tests and integration reference.
 
 ## How it fits together
 
 The main seam is `TargetCompleter`. Apps can plug in direct Sigma calls,
-agentic sessions, local models, CI jobs, or saved runtime traces while
+agent runtimes, local models, CI jobs, or saved runtime traces while
 `sigma-evals` handles rendering, repeats, concurrency, scoring, aggregation, and
 result records.
 
@@ -106,10 +108,27 @@ evaluator := sigmaevals.NewTargetEvaluator(myTargetCompleter)
 judge, err := evaluator.Judge(ctx, sigmaevals.JudgeInput{
     TargetOutput:  generatedAnswer,
     GroundTruth:   "Bonjour",
-    Rubric:        "Grade exact translation correctness.",
+    Rubric:        "accuracy", // or any custom rubric prompt
     Judge:         sigmaevals.Target{Provider: "agent-runtime", ModelID: "judge"},
     Mode:          sigmaevals.ModeGEval,
     PassThreshold: 4.0, // optional; defaults to 3 on the 1-5 G-Eval scale
+})
+```
+
+Batch judging is also SDK-owned through the same target-completer seam:
+
+```go
+batch, err := evaluator.EvaluateBatch(ctx, sigmaevals.BatchJudgeSpec{
+    Name:         "translation-regression",
+    Target:       sigmaevals.Target{Provider: "agent-runtime", ModelID: "worker"},
+    Judge:        sigmaevals.Target{Provider: "agent-runtime", ModelID: "judge"},
+    Rubric:       "accuracy",
+    TargetPrompt: "Answer directly.",
+    Cases: []sigmaevals.JudgeCase{{
+        ID:          "hello-fr",
+        Input:       "Translate hello to French.",
+        GroundTruth: "Bonjour",
+    }},
 })
 ```
 
@@ -128,7 +147,7 @@ showcases, not serious model-quality benchmarks.
 The CLIs under [`cmd`](cmd) are reference consumers of the SDK interfaces, not a
 hosted product surface.
 
-- [`cmd/sigma-evals`](cmd/sigma-evals) runs local smoke examples, real suites against Sigma targets, and one-off LLM judge checks for existing outputs. It registers the common Sigma v0.3 text providers plus OpenAI/OpenRouter image providers, and exposes `--session-id` / `--cache-retention` flags for provider affinity and prompt-cache-enabled runs.
+- [`cmd/sigma-evals`](cmd/sigma-evals) runs local smoke examples, real suites against Sigma targets, one-off LLM judge checks, batch judging, judge alignment, built-in rubric listing, variance reports, and baseline/current variance comparisons. It can render command outputs as JSON, JSONL, or Markdown via `--format`, registers the common Sigma v0.3 text providers plus OpenAI/OpenRouter image providers, and exposes `--session-id` / `--cache-retention` flags for provider affinity and prompt-cache-enabled runs.
 - [`cmd/sigma-evals-live`](cmd/sigma-evals-live) is an optional live harness for provider-backed needle and tool-calling checks. It requires `FIREWORKS_API_KEY` and `OPENCODE_API_KEY`.
 
 ## Scoring methods
@@ -146,6 +165,21 @@ The core package covers:
 - judge-alignment evaluation
 - pass@k aggregation for sampled or code-style tasks
 - scoring existing outputs without rerunning target models
+
+## Variance and baseline comparison
+
+Run repeated evals with the existing `--repeat` and `--concurrency` flags, then
+build variance reports over the result rows:
+
+```go
+today := sigmaevals.VarianceReportFromRunResult(todayRun)
+tomorrow := sigmaevals.VarianceReportFromRunResult(tomorrowRun)
+comparison := sigmaevals.CompareVarianceReports(today, tomorrow, sigmaevals.VarianceCompareOptions{})
+```
+
+The same comparison layer works for `BatchJudgeResult` and
+`JudgeAlignmentRunResult`. Normalized samples can be persisted as JSONL with
+`WriteVarianceSamplesJSONL` / `ReadVarianceSamplesJSONL`.
 
 ## Judge-alignment example
 
