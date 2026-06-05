@@ -47,6 +47,7 @@ type TargetResult struct {
 	Output           string                 `json:"output,omitempty"`
 	Message          sigma.AssistantMessage `json:"message,omitempty"`
 	Error            string                 `json:"error,omitempty"`
+	ErrorDetails     *ErrorDetails          `json:"errorDetails,omitempty"`
 	DurationMS       int64                  `json:"durationMs"`
 	Usage            *sigma.Usage           `json:"usage,omitempty"`
 	Cost             *sigma.Cost            `json:"cost,omitempty"`
@@ -80,6 +81,7 @@ func (c SigmaTargetCompleter) CompleteTarget(ctx context.Context, input TargetRe
 	model, err := c.model(input.Target)
 	if err != nil {
 		result.Error = err.Error()
+		result.ErrorDetails = classifyError(err)
 		result.DurationMS = time.Since(started).Milliseconds()
 		return result, err
 	}
@@ -97,13 +99,15 @@ func (c SigmaTargetCompleter) CompleteTarget(ctx context.Context, input TargetRe
 	}
 	if err != nil {
 		result.Error = err.Error()
+		result.ErrorDetails = classifyError(err)
 		result.DurationMS = time.Since(started).Milliseconds()
 		return result, err
 	}
 	if text, err := AssistantText(message); err == nil {
 		result.Output = text
-	} else {
+	} else if len(AssistantToolCalls(message)) == 0 {
 		result.Error = err.Error()
+		result.ErrorDetails = classifyError(err)
 	}
 	result.DurationMS = time.Since(started).Milliseconds()
 	return result, nil
@@ -290,6 +294,7 @@ func runTargetCase(ctx context.Context, completer TargetCompleter, renderer Rend
 	result.Request = request
 	if err != nil {
 		result.Error = err.Error()
+		result.ErrorDetails = classifyError(err)
 		result.DurationMS = time.Since(startedAt).Milliseconds()
 		return result
 	}
@@ -309,6 +314,7 @@ func runTargetCase(ctx context.Context, completer TargetCompleter, renderer Rend
 	result.Usage = targetResult.Usage
 	result.Cost = targetResult.Cost
 	result.ProviderMeta = targetResult.ProviderMetadata
+	result.ErrorDetails = targetResult.ErrorDetails
 	if targetResult.DurationMS > 0 {
 		result.DurationMS = targetResult.DurationMS
 	}
@@ -317,6 +323,9 @@ func runTargetCase(ctx context.Context, completer TargetCompleter, renderer Rend
 			result.Error = targetResult.Error
 		} else {
 			result.Error = err.Error()
+		}
+		if result.ErrorDetails == nil {
+			result.ErrorDetails = classifyErrorOrMessage(err, result.Error)
 		}
 		if result.DurationMS == 0 {
 			result.DurationMS = time.Since(startedAt).Milliseconds()
@@ -328,6 +337,7 @@ func runTargetCase(ctx context.Context, completer TargetCompleter, renderer Rend
 		result.Output = output
 		if err != nil && len(job.Case.Expected.ToolCalls) == 0 {
 			result.Error = err.Error()
+			result.ErrorDetails = classifyError(err)
 			if result.DurationMS == 0 {
 				result.DurationMS = time.Since(startedAt).Milliseconds()
 			}

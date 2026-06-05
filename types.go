@@ -136,6 +136,7 @@ type CaseResult struct {
 	Message       sigma.AssistantMessage `json:"message,omitempty"`
 	Scores        []Score                `json:"scores,omitempty"`
 	Error         string                 `json:"error,omitempty"`
+	ErrorDetails  *ErrorDetails          `json:"errorDetails,omitempty"`
 	DurationMS    int64                  `json:"durationMs"`
 	Usage         *sigma.Usage           `json:"usage,omitempty"`
 	Cost          *sigma.Cost            `json:"cost,omitempty"`

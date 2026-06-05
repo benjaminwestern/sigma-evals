@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	sigmaevals "github.com/benjaminwestern/sigma-evals"
+	"github.com/wintermi/sigma"
 )
 
 func TestLoadSuiteRejectsSuitesWithoutAddressableCases(t *testing.T) {
@@ -59,5 +60,17 @@ func TestDefaultRendererSupportsMultiTurnChatAndTools(t *testing.T) {
 	}
 	if len(request.Messages) != 3 {
 		t.Fatalf("messages = %d, want multi-turn chat messages", len(request.Messages))
+	}
+
+	imageSuite, err := sigmaevals.LoadSuiteFile("examples/chat/image-input-url.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	request, err = (sigmaevals.DefaultRenderer{}).Render(t.Context(), sigmaevals.RenderInput{Suite: imageSuite, Case: imageSuite.Cases[0]})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := request.Messages[0].Content[1]; got.Type != sigma.ContentBlockImage || got.ImageSource != "url" || got.URL == "" {
+		t.Fatalf("image block = %+v, want URL image content block", got)
 	}
 }

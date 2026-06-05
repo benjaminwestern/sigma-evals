@@ -103,6 +103,9 @@ func RunFanout(ctx context.Context, completer TargetCompleter, spec FanoutSpec) 
 			if err != nil && result.Error == "" {
 				result.Error = err.Error()
 			}
+			if result.ErrorDetails == nil {
+				result.ErrorDetails = classifyErrorOrMessage(err, result.Error)
+			}
 			if spec.Progress != nil {
 				copyResult := result
 				spec.Progress(ProgressEvent{Kind: ProgressResult, Target: job.Target, Repeat: job.Repeat, TargetResult: &copyResult})

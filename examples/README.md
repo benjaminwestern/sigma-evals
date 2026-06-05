@@ -10,8 +10,7 @@ negative-answer rejection, and needle retrieval from distracting context.
 
 ## Chat examples
 
-The suites under [`chat`](chat) demonstrate single-turn and multi-turn chat evals.
-They use deterministic JSON and answer scorers.
+The suites under [`chat`](chat) demonstrate single-turn, multi-turn, and multimodal image-input chat evals. They use deterministic JSON and answer scorers.
 
 ## Multiple-choice examples
 

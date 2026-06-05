@@ -11,7 +11,7 @@ stable.
 
 ## Status
 
-Public preview. The module builds from a fresh clone and pins Sigma `v0.2.0`
+Public preview. The module builds from a fresh clone and pins Sigma `v0.3.0`
 in `go.mod`; there is no local `replace` dependency.
 
 ## Quick start
@@ -59,8 +59,9 @@ go run ./cmd/sigma-evals judge-output \
 
 ## What it provides
 
-- A portable `Suite` / `Case` / `Expected` JSON model for text, chat, multiple-choice, JSON, and tool-call evals.
+- A portable `Suite` / `Case` / `Expected` JSON model for text, multimodal chat/image-input, multiple-choice, JSON, and tool-call evals.
 - SDK runners for direct Sigma models, caller-provided targets, raw fanout, and scoring existing outputs without regenerating completions.
+- Provider-neutral error classification in result records using Sigma's typed auth, quota, billing, rate-limit, transient, context-overflow, invalid-request, and provider error classes.
 - Deterministic scorers for exact, normalised, contains, regex, JSON structure, token F1, multiple choice, pass@k, and expected tool calls.
 - LLM-as-judge helpers for strict JSON judges, pairwise judging, G-Eval score-token weighting, and weighted rubric scoring.
 - Judge-alignment evaluation with regression, classification, calibration, and tolerance metrics against labelled examples.
@@ -118,7 +119,7 @@ Working JSON suites live in [`examples`](examples). They are intentionally small
 showcases, not serious model-quality benchmarks.
 
 - [`examples/generic`](examples/generic) demonstrates closed-answer alias matching, negative-answer rejection, and needle retrieval.
-- [`examples/chat`](examples/chat) demonstrates single-turn JSON extraction and multi-turn context recall.
+- [`examples/chat`](examples/chat) demonstrates single-turn JSON extraction, multi-turn context recall, and image-input rendering.
 - [`examples/choice`](examples/choice) demonstrates multiple-choice selected-label scoring.
 - [`examples/tools`](examples/tools) demonstrates expected tool-call evaluation by tool name and JSON arguments.
 
@@ -127,7 +128,7 @@ showcases, not serious model-quality benchmarks.
 The CLIs under [`cmd`](cmd) are reference consumers of the SDK interfaces, not a
 hosted product surface.
 
-- [`cmd/sigma-evals`](cmd/sigma-evals) runs local smoke examples, real suites against Sigma targets, and one-off LLM judge checks for existing outputs.
+- [`cmd/sigma-evals`](cmd/sigma-evals) runs local smoke examples, real suites against Sigma targets, and one-off LLM judge checks for existing outputs. It registers the common Sigma v0.3 text providers plus OpenAI/OpenRouter image providers, and exposes `--session-id` / `--cache-retention` flags for provider affinity and prompt-cache-enabled runs.
 - [`cmd/sigma-evals-live`](cmd/sigma-evals-live) is an optional live harness for provider-backed needle and tool-calling checks. It requires `FIREWORKS_API_KEY` and `OPENCODE_API_KEY`.
 
 ## Scoring methods

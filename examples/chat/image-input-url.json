@@ -1,0 +1,23 @@
+{
+  "name": "Image Input URL",
+  "version": "v1",
+  "description": "Multimodal chat eval that verifies image URL content blocks survive suite loading and rendering.",
+  "cases": [
+    {
+      "id": "describe-chart",
+      "messages": [
+        {
+          "role": "user",
+          "content": [
+            {"type": "text", "text": "What dominant color is shown in this simple reference image? Answer with one color word."},
+            {"type": "image", "mimeType": "image/png", "imageSource": "url", "url": "https://example.test/reference-blue-square.png"}
+          ]
+        }
+      ],
+      "expected": {
+        "answers": ["blue"]
+      },
+      "tags": ["chat", "image-input", "multimodal"]
+    }
+  ]
+}

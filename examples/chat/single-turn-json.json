@@ -2,11 +2,11 @@
   "name": "Single-turn JSON Extraction",
   "version": "v1",
   "description": "Single-turn chat eval requiring structured JSON output.",
-  "systemPrompt": "Extract the requested fields and return only JSON.",
+  "systemPrompt": "Extract exactly the requested fields and return only a JSON object with those keys. Do not include Markdown fences or extra keys.",
   "cases": [
     {
       "id": "extract-person",
-      "input": "Ada Lovelace wrote notes on the Analytical Engine.",
+      "input": "Extract the fields person and topic from this sentence: Ada Lovelace wrote notes on the Analytical Engine.",
       "expected": {
         "json": {
           "person": "Ada Lovelace",

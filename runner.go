@@ -140,6 +140,7 @@ func (r *Runner) runOne(ctx context.Context, client Completer, renderer Renderer
 	result.Request = request
 	if err != nil {
 		result.Error = err.Error()
+		result.ErrorDetails = classifyError(err)
 		result.DurationMS = time.Since(startedAt).Milliseconds()
 		return result
 	}
@@ -151,6 +152,7 @@ func (r *Runner) runOne(ctx context.Context, client Completer, renderer Renderer
 	result.ProviderMeta = message.ProviderMetadata
 	if err != nil {
 		result.Error = err.Error()
+		result.ErrorDetails = classifyError(err)
 		result.DurationMS = time.Since(startedAt).Milliseconds()
 		return result
 	}
@@ -159,6 +161,7 @@ func (r *Runner) runOne(ctx context.Context, client Completer, renderer Renderer
 	result.Output = output
 	if err != nil && len(job.Case.Expected.ToolCalls) == 0 {
 		result.Error = err.Error()
+		result.ErrorDetails = classifyError(err)
 		result.DurationMS = time.Since(startedAt).Milliseconds()
 		return result
 	}

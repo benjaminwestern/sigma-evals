@@ -20,9 +20,15 @@ import (
 
 	sigmaevals "github.com/benjaminwestern/sigma-evals"
 	"github.com/wintermi/sigma"
+	"github.com/wintermi/sigma/provider/anthropic"
+	"github.com/wintermi/sigma/provider/bedrock"
 	"github.com/wintermi/sigma/provider/fireworks"
+	"github.com/wintermi/sigma/provider/google"
+	"github.com/wintermi/sigma/provider/mistral"
 	"github.com/wintermi/sigma/provider/openai"
 	"github.com/wintermi/sigma/provider/opencode"
+	"github.com/wintermi/sigma/provider/openrouter"
+	"github.com/wintermi/sigma/provider/xai"
 )
 
 func main() {
@@ -62,7 +68,7 @@ Commands:
 
 Examples:
   sigma-evals smoke-examples --examples examples --out runs/smoke.json
-  sigma-evals run-suite --suite examples/generic/answer-aliases.json --target fireworks=accounts/fireworks/routers/kimi-k2p6-turbo
+  sigma-evals run-suite --suite examples/generic/answer-aliases.json --target fireworks=accounts/fireworks/routers/kimi-k2p6-turbo --session-id nightly --cache-retention long
   sigma-evals judge-output --judge openai=gpt-4o --target-output "Bonjour" --ground-truth "Bonjour" --rubric "Grade exactness."`)
 }
 
@@ -132,6 +138,8 @@ func runSuite(args []string) error {
 	outPath := flags.String("out", "", "optional JSON output path")
 	repeats := flags.Int("repeat", 1, "number of repeats per target")
 	concurrency := flags.Int("concurrency", 1, "number of concurrent target attempts")
+	sessionID := flags.String("session-id", "", "optional Sigma session ID for provider affinity and prompt-cache keys")
+	cacheRetention := flags.String("cache-retention", "", "optional provider prompt-cache retention: none, short, long, ephemeral, or persistent")
 	var targetFlags repeatedString
 	flags.Var(&targetFlags, "target", "target as provider=model; repeatable")
 	if err := flags.Parse(args); err != nil {
@@ -159,11 +167,16 @@ func runSuite(args []string) error {
 	if err := registerCommonProviders(registry); err != nil {
 		return err
 	}
+	options, err := requestOptions(*sessionID, *cacheRetention)
+	if err != nil {
+		return err
+	}
 	client := sigma.NewClient(sigma.WithRegistry(registry))
 	result, err := sigmaevals.NewTargetRunner(sigmaevals.SigmaTargetCompleter{Client: client, Registry: registry}).Run(context.Background(), sigmaevals.TargetRunSpec{
 		Suite:       suite,
 		Targets:     targets,
 		Scorers:     []sigmaevals.Scorer{sigmaevals.AutoScorer{}},
+		Options:     options,
 		Repeats:     *repeats,
 		Concurrency: *concurrency,
 	})
@@ -189,6 +202,8 @@ func runJudgeOutput(args []string) error {
 	rubric := flags.String("rubric", "", "judge rubric text")
 	mode := flags.String("mode", string(sigmaevals.ModeEvaluate), "judge mode: evaluate or g_eval")
 	passThreshold := flags.Float64("pass-threshold", 0, "G-Eval pass threshold on the 1-5 score scale; default 3")
+	sessionID := flags.String("session-id", "", "optional Sigma session ID for provider affinity and prompt-cache keys")
+	cacheRetention := flags.String("cache-retention", "", "optional provider prompt-cache retention: none, short, long, ephemeral, or persistent")
 	outPath := flags.String("out", "", "optional JSON output path")
 	if err := flags.Parse(args); err != nil {
 		return err
@@ -207,6 +222,10 @@ func runJudgeOutput(args []string) error {
 	if err := registerCommonProviders(registry); err != nil {
 		return err
 	}
+	options, err := requestOptions(*sessionID, *cacheRetention)
+	if err != nil {
+		return err
+	}
 	client := sigma.NewClient(sigma.WithRegistry(registry))
 	result, err := sigmaevals.NewTargetEvaluator(sigmaevals.SigmaTargetCompleter{Client: client, Registry: registry}).Judge(context.Background(), sigmaevals.JudgeInput{
 		Input:         *inputText,
@@ -216,6 +235,7 @@ func runJudgeOutput(args []string) error {
 		Judge:         judge,
 		Mode:          sigmaevals.Mode(*mode),
 		PassThreshold: *passThreshold,
+		JudgeOptions:  options,
 	})
 	if err != nil {
 		return err
@@ -231,13 +251,58 @@ func runJudgeOutput(args []string) error {
 }
 
 func registerCommonProviders(registry *sigma.Registry) error {
-	if err := fireworks.Register(registry); err != nil {
-		return err
+	registrations := []func() error{
+		func() error { return anthropic.Register(registry, sigma.ProviderAnthropic) },
+		func() error { return bedrock.Register(registry, sigma.ProviderAmazonBedrock) },
+		func() error { return fireworks.Register(registry) },
+		func() error { return google.Register(registry, sigma.ProviderGoogle) },
+		func() error { return google.Register(registry, sigma.ProviderGoogleVertex) },
+		func() error { return mistral.Register(registry, sigma.ProviderMistral) },
+		func() error { return opencode.RegisterDefault(registry) },
+		func() error { return openai.Register(registry, sigma.ProviderOpenAI) },
+		func() error { return openai.RegisterImages(registry, sigma.ProviderOpenAI) },
+		func() error { return openrouter.Register(registry) },
+		func() error { return xai.Register(registry) },
 	}
-	if err := opencode.RegisterDefault(registry); err != nil {
-		return err
+	for _, register := range registrations {
+		if err := register(); err != nil {
+			return err
+		}
 	}
-	return openai.Register(registry, sigma.ProviderOpenAI)
+	return nil
+}
+
+func requestOptions(sessionID string, cacheRetention string) ([]sigma.Option, error) {
+	var options []sigma.Option
+	if strings.TrimSpace(sessionID) != "" {
+		options = append(options, sigma.WithSessionID(strings.TrimSpace(sessionID)))
+	}
+	if strings.TrimSpace(cacheRetention) == "" {
+		return options, nil
+	}
+	retention, err := parseCacheRetention(cacheRetention)
+	if err != nil {
+		return nil, err
+	}
+	options = append(options, sigma.WithCacheRetention(retention))
+	return options, nil
+}
+
+func parseCacheRetention(raw string) (sigma.CacheRetention, error) {
+	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case "none":
+		return sigma.CacheRetentionNone, nil
+	case "short":
+		return sigma.CacheRetentionShort, nil
+	case "long":
+		return sigma.CacheRetentionLong, nil
+	case "ephemeral":
+		return sigma.CacheRetentionEphemeral, nil
+	case "persistent":
+		return sigma.CacheRetentionPersistent, nil
+	default:
+		return "", fmt.Errorf("unknown cache retention %q", raw)
+	}
 }
 
 type repeatedString []string
